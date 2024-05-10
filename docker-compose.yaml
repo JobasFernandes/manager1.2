@@ -74,7 +74,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=network_public"
-      - "traefik.http.routers.evolution.rule=Host(`${URL_EVOLUTION}`)" # SUBDOMINO DA API
+      - "traefik.http.routers.evolution.rule=Host(`${EVOLUTION_URL}`)" # SUBDOMINO DA API
       - "traefik.http.routers.evolution.entrypoints=websecure"
       - "traefik.http.routers.evolution.priority=1"
       - "traefik.http.routers.evolution.tls.certresolver=letsencryptresolver"

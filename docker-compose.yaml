@@ -1,0 +1,153 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v2.11.2
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "--api.dashboard=false"
+      - "--api.insecure=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=network_public"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencryptresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencryptresolver.acme.email=${EMAIL_TRAEFIK}" # EMAIL PARA GERAR SSL
+      - "--certificatesresolvers.letsencryptresolver.acme.storage=/etc/traefik/letsencrypt/acme.json"
+      - "--log.level=DEBUG"
+      - "--log.format=common"
+      - "--log.filePath=/var/log/traefik/traefik.log"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access-log"
+      - "--ping=true"
+      - "--ping.entrypoint=ping"
+      - "--entryPoints.ping.address=:8082"
+      - "--global.checkNewVersion=false"
+      - "--global.sendAnonymousUsage=false"
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:8082/ping", "--spider"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.http-catchall.rule=Host(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-https@docker"
+      - "traefik.http.routers.http-catchall.priority=1"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "certificados:/etc/traefik/letsencrypt"
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - network_public
+
+  evolution-api:
+    image: atendai/evolution-api:latest
+    command: ["node", "./dist/src/main.js"]
+    container_name: evolution_api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_URL=https://${EVOLUTION_URL} # SUBDOMINO DA API
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_APIKEY} # Encryption key 256 -- https://acte.ltd/utils/randomkeygen <-- GERE AQUI 
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - CONFIG_SESSION_PHONE_CLIENT=Whatsapp
+      - CONFIG_SESSION_PHONE_NAME=Chrome
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    networks:
+      - network_public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=network_public"
+      - "traefik.http.routers.evolution.rule=Host(`${EVOLUTION_URL}`)" # SUBDOMINO DA API
+      - "traefik.http.routers.evolution.entrypoints=websecure"
+      - "traefik.http.routers.evolution.priority=1"
+      - "traefik.http.routers.evolution.tls.certresolver=letsencryptresolver"
+      - "traefik.http.routers.evolution.service=evolution"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+      - "traefik.http.services.evolution.loadbalancer.passHostHeader=true"
+    depends_on:
+      - traefik
+
+  mysql:
+    image: percona:8.0
+    command:
+      [
+        --character-set-server=utf8mb4,
+        --collation-server=utf8mb4_general_ci,
+        --sql-mode=,
+        --default-authentication-plugin=mysql_native_password,
+        --max-allowed-packet=512MB,
+        --port=3306,
+      ]
+    container_name: mysql
+    restart: unless-stopped
+    networks:
+      - network_public
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - ./:/docker-entrypoint-initdb.d
+      - mysql_data:/var/lib/mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE} # ALTERE AQUI
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD} # ALTERE AQUI
+      - MYSQL_USER=${MYSQL_USER} # ALTERE AQUI
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD} # ALTERE AQUI
+      - TZ=${TZ}
+
+  manager:
+    container_name: manager
+    build:
+      dockerfile: ./Dockerfile
+    restart: unless-stopped
+    networks:
+      - network_public
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - manager_data:/var/www/html
+    environment:
+      - TZ=${TZ}
+      - DB_SERVER=${DB_SERVER} ## NOME DO CONTAINER DO MYSQL
+      - DB_USERNAME=${MYSQL_USER}
+      - DB_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - DB_NAME=${MYSQL_DATABASE}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=network_public"
+      - "traefik.http.routers.manager-https.rule=Host(`${MANAGER_URL}`)"
+      - "traefik.http.routers.manager-https.entrypoints=websecure"
+      - "traefik.http.routers.manager-https.tls=true"
+      - "traefik.http.routers.manager-https.tls.certresolver=letsencryptresolver"
+      - "traefik.http.routers.manager-https.service=manager"
+      - "traefik.http.services.manager.loadbalancer.server.port=80"
+    depends_on:
+      - traefik
+      - mysql
+
+volumes:
+  certificados:
+  evolution_instances:
+  evolution_store:
+  mysql_data:
+  manager_data:
+
+networks:
+  network_public:
+    external: true
